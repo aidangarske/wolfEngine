@@ -446,7 +446,7 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
                 if (arg != EVP_AEAD_TLS1_AAD_LEN) {
                     WOLFENGINE_ERROR_MSG(WE_LOG_CIPHER,
                                          "AAD len != EVP_AEAD_TLS1_AAD_LEN");
-                    ret = -1;
+                    ret = 0;
                 }
                 if (ret == 1) {
                     /* Get the verion from the record layer. */
@@ -464,7 +464,7 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
                         if (aes->tls11) {
                             /* Must be space for IV. */
                             if (len < WC_AES_BLOCK_SIZE) {
-                                ret = -1;
+                                ret = 0;
                             }
                             else {
                                 /* Remove IV and update record header. */
@@ -481,7 +481,7 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
                             if (rc != 1) {
                                 WOLFENGINE_ERROR_FUNC(WE_LOG_CIPHER,
                                                       "we_hmac_update", rc);
-                                ret = -1;
+                                ret = 0;
                             }
                         }
                         if (ret == 1) {
