@@ -114,6 +114,7 @@ int test_cmac_output_size(ENGINE *e, void *data);
 int test_cmac_update_size(ENGINE *e, void *data);
 int test_cmac_copy_error(ENGINE *e, void *data);
 int test_cmac_keygen_reuse(ENGINE *e, void *data);
+int test_cmac_asn1_registry(ENGINE *e, void *data);
 #endif /* WE_HAVE_HMAC */
 
 #ifdef WE_HAVE_HMAC
