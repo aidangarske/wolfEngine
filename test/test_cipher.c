@@ -392,7 +392,6 @@ int test_aes128_ecb_stream(ENGINE *e, void *data)
 
     return err;
 }
-
 /******************************************************************************/
 
 int test_aes192_ecb_stream(ENGINE *e, void *data)
@@ -494,7 +493,8 @@ int test_aes128_cbc_hmac_tls_short(ENGINE *e, void *data)
     int decLen = 0;
     EVP_CIPHER_CTX *encCtx = NULL;
     EVP_CIPHER_CTX *ctx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
     unsigned char key[16];
     unsigned char macKey[SHA256_DIGEST_LENGTH];
     unsigned char iv[16];
@@ -504,14 +504,6 @@ int test_aes128_cbc_hmac_tls_short(ENGINE *e, void *data)
     unsigned char aad[EVP_AEAD_TLS1_AAD_LEN];
 
     (void)data;
-
-    /* OpenSSL only provides the stitched AES-CBC-HMAC-SHA256 cipher on
-     * platforms where it has a hand-written assembly implementation (e.g.
-     * AES-NI x86_64); elsewhere EVP_aes_128_cbc_hmac_sha256() returns NULL,
-     * so there is nothing to exercise. */
-    if (cipher == NULL) {
-        return 0;
-    }
 
     XMEMSET(key, 0, sizeof(key));
     XMEMSET(macKey, 0, sizeof(macKey));
@@ -573,20 +565,29 @@ int test_aes128_cbc_hmac_tls_short(ENGINE *e, void *data)
     return err;
 }
 
+#else
+int test_aes128_cbc_hmac_tls_short(ENGINE *e, void *data)
+{
+    /* Stitched AES-CBC-HMAC is not a FIPS-validated cipher, so this path is
+     * not exercised under FIPS. */
+    (void)e;
+    (void)data;
+    return 0;
+}
+#endif
+
 /******************************************************************************/
 
 int test_aes128_cbc_hmac_staged_init(ENGINE *e, void *data)
 {
     int err = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
     unsigned char key[16];
     unsigned char iv[16];
 
     (void)data;
-
-    if (cipher == NULL)
-        return 0;
 
     XMEMSET(key, 0, sizeof(key));
     XMEMSET(iv, 0, sizeof(iv));
@@ -612,7 +613,8 @@ int test_aes128_cbc_hmac_plain_encrypt(ENGINE *e, void *data)
     int len;
     EVP_CIPHER_CTX *usedCtx = NULL;
     EVP_CIPHER_CTX *cleanCtx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
     unsigned char key[16];
     unsigned char macKey[SHA256_DIGEST_LENGTH];
     unsigned char iv[16];
@@ -623,9 +625,6 @@ int test_aes128_cbc_hmac_plain_encrypt(ENGINE *e, void *data)
     unsigned char cleanOut[64];
 
     (void)data;
-
-    if (cipher == NULL)
-        return 0;
 
     XMEMSET(key, 0, sizeof(key));
     XMEMSET(macKey, 0, sizeof(macKey));
@@ -691,14 +690,12 @@ int test_aes128_cbc_hmac_encrypt_error(ENGINE *e, void *data)
     int err = 0;
     int outLen = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
     unsigned char in[16];
     unsigned char out[16];
 
     (void)data;
-
-    if (cipher == NULL)
-        return 0;
 
     XMEMSET(in, 0, sizeof(in));
 
@@ -721,13 +718,11 @@ int test_aes128_cbc_hmac_ctrl_error(ENGINE *e, void *data)
 {
     int err = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
     unsigned char aad[EVP_AEAD_TLS1_AAD_LEN];
 
     (void)data;
-
-    if (cipher == NULL)
-        return 0;
 
     XMEMSET(aad, 0, sizeof(aad));
 
@@ -754,56 +749,54 @@ int test_aes128_cbc_hmac_tls_empty(ENGINE *e, void *data)
 {
     int err = 0;
     int len;
-    int osslLen = 0;
     int engineLen = 0;
-    EVP_CIPHER_CTX *osslCtx = NULL;
+    int finalLen = 0;
+    int i;
     EVP_CIPHER_CTX *engineCtx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
+    unsigned int macLen = 0;
     unsigned char key[16];
     unsigned char macKey[SHA256_DIGEST_LENGTH];
     unsigned char iv[16];
-    unsigned char osslAAD[EVP_AEAD_TLS1_AAD_LEN];
     unsigned char engineAAD[EVP_AEAD_TLS1_AAD_LEN];
+    unsigned char plain[48];
     unsigned char in[48];
-    unsigned char osslOut[48];
-    unsigned char engineOut[48];
+    unsigned char expected[48];
+    unsigned char engineOut[80];
 
     (void)data;
-
-    if (cipher == NULL)
-        return 0;
 
     XMEMSET(key, 0, sizeof(key));
     XMEMSET(macKey, 0, sizeof(macKey));
     XMEMSET(iv, 0, sizeof(iv));
-    XMEMSET(osslAAD, 0, sizeof(osslAAD));
+    XMEMSET(engineAAD, 0, sizeof(engineAAD));
+    XMEMSET(plain, 0, sizeof(plain));
     XMEMSET(in, 0, sizeof(in));
+    XMEMSET(engineOut, 0xa5, sizeof(engineOut));
 
-    osslAAD[9] = (unsigned char)(TLS1_VERSION >> 8);
-    osslAAD[10] = (unsigned char)TLS1_VERSION;
-    XMEMCPY(engineAAD, osslAAD, sizeof(engineAAD));
+    engineAAD[9] = (unsigned char)(TLS1_VERSION >> 8);
+    engineAAD[10] = (unsigned char)TLS1_VERSION;
 
-    err = (osslCtx = EVP_CIPHER_CTX_new()) == NULL;
+    if (err == 0) {
+        err = HMAC(EVP_sha256(), macKey, sizeof(macKey), engineAAD,
+                   sizeof(engineAAD), plain, &macLen) == NULL;
+    }
+    if (err == 0)
+        err = macLen != SHA256_DIGEST_LENGTH;
+    if (err == 0) {
+        XMEMSET(plain + macLen, 15, sizeof(plain) - macLen);
+        err = test_cipher_enc(NULL, EVP_aes_128_cbc(), key, iv, plain,
+                              sizeof(plain), expected, 0);
+    }
     if (err == 0)
         err = (engineCtx = EVP_CIPHER_CTX_new()) == NULL;
-    if (err == 0) {
-        err = EVP_EncryptInit_ex(osslCtx, cipher, NULL, key, iv) != 1;
-    }
     if (err == 0) {
         err = EVP_EncryptInit_ex(engineCtx, cipher, e, key, iv) != 1;
     }
     if (err == 0) {
-        err = EVP_CIPHER_CTX_ctrl(osslCtx, EVP_CTRL_AEAD_SET_MAC_KEY,
-                                  sizeof(macKey), macKey) != 1;
-    }
-    if (err == 0) {
         err = EVP_CIPHER_CTX_ctrl(engineCtx, EVP_CTRL_AEAD_SET_MAC_KEY,
                                   sizeof(macKey), macKey) != 1;
-    }
-    if (err == 0) {
-        len = EVP_CIPHER_CTX_ctrl(osslCtx, EVP_CTRL_AEAD_TLS1_AAD,
-                                  sizeof(osslAAD), osslAAD);
-        err = len != (int)sizeof(in);
     }
     if (err == 0) {
         len = EVP_CIPHER_CTX_ctrl(engineCtx, EVP_CTRL_AEAD_TLS1_AAD,
@@ -811,19 +804,23 @@ int test_aes128_cbc_hmac_tls_empty(ENGINE *e, void *data)
         err = len != (int)sizeof(in);
     }
     if (err == 0) {
-        err = EVP_EncryptUpdate(osslCtx, osslOut, &osslLen, in,
-                                sizeof(in)) != 1;
-    }
-    if (err == 0) {
         err = EVP_EncryptUpdate(engineCtx, engineOut, &engineLen, in,
                                 sizeof(in)) != 1;
     }
     if (err == 0)
-        err = osslLen != engineLen;
+        err = engineLen != (int)sizeof(expected);
     if (err == 0)
-        err = XMEMCMP(osslOut, engineOut, osslLen) != 0;
+        err = XMEMCMP(expected, engineOut, sizeof(expected)) != 0;
+    if (err == 0) {
+        err = EVP_EncryptFinal_ex(engineCtx, engineOut + engineLen,
+                                  &finalLen) != 1;
+    }
+    if (err == 0)
+        err = finalLen != 0;
+    for (i = engineLen; (err == 0) && (i < (int)sizeof(engineOut)); i++) {
+        err = engineOut[i] != 0xa5;
+    }
 
-    EVP_CIPHER_CTX_free(osslCtx);
     EVP_CIPHER_CTX_free(engineCtx);
 
     return err;
@@ -837,7 +834,8 @@ int test_aes128_cbc_hmac_reinit_state(ENGINE *e, void *data)
     int len;
     unsigned int macLen = 0;
     EVP_CIPHER_CTX *ctx = NULL;
-    const EVP_CIPHER *cipher = EVP_aes_128_cbc_hmac_sha256();
+    const EVP_CIPHER *cipher = ENGINE_get_cipher(
+        e, NID_aes_128_cbc_hmac_sha256);
     unsigned char key[16];
     unsigned char macKey[SHA256_DIGEST_LENGTH];
     unsigned char iv[16];
@@ -848,9 +846,6 @@ int test_aes128_cbc_hmac_reinit_state(ENGINE *e, void *data)
     unsigned char out[sizeof(in) + sizeof(mac)];
 
     (void)data;
-
-    if (cipher == NULL)
-        return 0;
 
     XMEMSET(key, 0, sizeof(key));
     XMEMSET(macKey, 0, sizeof(macKey));
@@ -900,52 +895,46 @@ int test_aes128_cbc_hmac_reinit_state(ENGINE *e, void *data)
 
     return err;
 }
+
+/******************************************************************************/
+
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+int test_aes128_cbc_hmac_cleanup(ENGINE *e, void *data)
+{
+    int err = 0;
+    EVP_CIPHER_CTX *ctx = NULL;
+    EVP_CIPHER_CTX *copyCtx = NULL;
+    const EVP_CIPHER *cipher;
+    unsigned char key[16];
+    unsigned char iv[16];
+
+    (void)data;
+
+    cipher = ENGINE_get_cipher(e, NID_aes_128_cbc_hmac_sha256);
+    err = cipher == NULL;
+    if (err == 0)
+        err = EVP_CIPHER_meth_get_cleanup(cipher) == NULL;
+
+    XMEMSET(key, 0, sizeof(key));
+    XMEMSET(iv, 0, sizeof(iv));
+
+    if (err == 0)
+        err = (ctx = EVP_CIPHER_CTX_new()) == NULL;
+    if (err == 0) {
+        err = EVP_EncryptInit_ex(ctx, cipher, e, key, iv) != 1;
+    }
+    if (err == 0)
+        err = (copyCtx = EVP_CIPHER_CTX_new()) == NULL;
+    if (err == 0)
+        err = EVP_CIPHER_CTX_copy(copyCtx, ctx) != 0;
+
+    EVP_CIPHER_CTX_free(copyCtx);
+    EVP_CIPHER_CTX_free(ctx);
+
+    return err;
+}
 #else
-int test_aes128_cbc_hmac_tls_short(ENGINE *e, void *data)
-{
-    /* Stitched AES-CBC-HMAC is not a FIPS-validated cipher, so this path is
-     * not exercised under FIPS. */
-    (void)e;
-    (void)data;
-    return 0;
-}
-
-int test_aes128_cbc_hmac_staged_init(ENGINE *e, void *data)
-{
-    (void)e;
-    (void)data;
-    return 0;
-}
-
-int test_aes128_cbc_hmac_plain_encrypt(ENGINE *e, void *data)
-{
-    (void)e;
-    (void)data;
-    return 0;
-}
-
-int test_aes128_cbc_hmac_encrypt_error(ENGINE *e, void *data)
-{
-    (void)e;
-    (void)data;
-    return 0;
-}
-
-int test_aes128_cbc_hmac_ctrl_error(ENGINE *e, void *data)
-{
-    (void)e;
-    (void)data;
-    return 0;
-}
-
-int test_aes128_cbc_hmac_tls_empty(ENGINE *e, void *data)
-{
-    (void)e;
-    (void)data;
-    return 0;
-}
-
-int test_aes128_cbc_hmac_reinit_state(ENGINE *e, void *data)
+int test_aes128_cbc_hmac_cleanup(ENGINE *e, void *data)
 {
     (void)e;
     (void)data;

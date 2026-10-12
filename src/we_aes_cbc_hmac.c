@@ -94,6 +94,7 @@ static int we_aes_cbc_hmac_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
         rc = wc_HmacInit(&aes->hmac, NULL, INVALID_DEVID);
         if (rc != 0) {
             WOLFENGINE_ERROR_FUNC(WE_LOG_CIPHER, "wc_HmacInit", rc);
+            wc_AesFree(&aes->aes);
             ret = 0;
         }
     }
@@ -134,6 +135,35 @@ static int we_aes_cbc_hmac_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
 
     return ret;
 }
+
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+/**
+ * Cleanup the internal AES-CBC HMAC object.
+ *
+ * @param  ctx  [in]  EVP cipher context.
+ * @return  1 on success and 0 on failure.
+ */
+static int we_aes_cbc_hmac_cleanup(EVP_CIPHER_CTX *ctx)
+{
+    int ret = 1;
+    we_AesCbcHmac *aes;
+
+    aes = (we_AesCbcHmac *)EVP_CIPHER_CTX_get_cipher_data(ctx);
+    if (aes == NULL) {
+        WOLFENGINE_ERROR_FUNC_NULL(WE_LOG_CIPHER,
+                                   "EVP_CIPHER_CTX_get_cipher_data", aes);
+        ret = 0;
+    }
+
+    if ((ret == 1) && aes->init) {
+        wc_HmacFree(&aes->hmac);
+        wc_AesFree(&aes->aes);
+        aes->init = 0;
+    }
+
+    return ret;
+}
+#endif
 
 /**
  * Encrypt and MAC using wolfSSL.
@@ -221,6 +251,11 @@ static int we_aes_cbc_hmac_enc(we_AesCbcHmac* aes, unsigned char *out,
             ret = (int)len;
             WOLFENGINE_BUFFER(WE_LOG_CIPHER, out + off, (int)(len - off));
         }
+    }
+    if (tls) {
+        aes->pLen = 0;
+        aes->tls = 0;
+        aes->tls11 = 0;
     }
 
     WOLFENGINE_LEAVE(WE_LOG_CIPHER, "we_aes_cbc_hmac_enc", ret);
@@ -372,24 +407,29 @@ static int we_aes_cbc_hmac_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
                                   const unsigned char *in, size_t len)
 {
     int ret = 1;
-    we_AesCbcHmac* aes;
+    we_AesCbcHmac* aes = NULL;
 
 
     WOLFENGINE_ENTER(WE_LOG_CIPHER, "we_aes_cbc_hmac_cipher");
     WOLFENGINE_MSG_VERBOSE(WE_LOG_CIPHER, "ARGS [ctx = %p, out = %p, in = %p, "
                            "len = %zu]", ctx, out, in, len);
 
-    /* Get the AES-CBC object to work with. */
-    aes = (we_AesCbcHmac *)EVP_CIPHER_CTX_get_cipher_data(ctx);
-    if (aes == NULL) {
+    if ((in == NULL) && (len == 0)) {
+        ret = 0;
+    }
+    else {
+        /* Get the AES-CBC object to work with. */
+        aes = (we_AesCbcHmac *)EVP_CIPHER_CTX_get_cipher_data(ctx);
+    }
+    if ((ret != 0) && (aes == NULL)) {
         WOLFENGINE_ERROR_FUNC_NULL(WE_LOG_CIPHER,
                                    "EVP_CIPHER_CTX_get_cipher_data", aes);
         ret = -1;
     }
-    else if (aes->enc) {
+    else if ((ret != 0) && aes->enc) {
         ret = we_aes_cbc_hmac_enc(aes, out, in, len);
     }
-    else {
+    else if (ret != 0) {
         ret = we_aes_cbc_hmac_dec(aes, out, in, len);
     }
 
@@ -416,6 +456,7 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
     unsigned char *tls;
     int tlsVer;
     int len;
+    we_AesCbcHmac *copy;
     char errBuff[WOLFENGINE_MAX_LOG_WIDTH];
 
     WOLFENGINE_ENTER(WE_LOG_CIPHER, "we_aes_cbc_hmac_ctrl");
@@ -434,6 +475,17 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
     }
     if (ret == 1) {
         switch (type) {
+            case EVP_CTRL_COPY:
+                copy = NULL;
+                if (ptr != NULL) {
+                    copy = (we_AesCbcHmac *)EVP_CIPHER_CTX_get_cipher_data(
+                        (EVP_CIPHER_CTX *)ptr);
+                }
+                if (copy != NULL) {
+                    OPENSSL_cleanse(copy, sizeof(*copy));
+                }
+                ret = 0;
+                break;
             case EVP_CTRL_AEAD_SET_MAC_KEY:
                 WOLFENGINE_MSG(WE_LOG_CIPHER, "EVP_CTRL_AEAD_SET_MAC_KEY");
                 /* Set the HMAC key. */
@@ -526,7 +578,8 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
      EVP_CIPH_ALWAYS_CALL_INIT          | \
      EVP_CIPH_CBC_MODE                  | \
      EVP_CIPH_FLAG_DEFAULT_ASN1         | \
-     EVP_CIPH_FLAG_AEAD_CIPHER)
+     EVP_CIPH_FLAG_AEAD_CIPHER          | \
+     EVP_CIPH_CUSTOM_COPY)
 
 /** AES128-CBC HMAC SHA256 EVP cipher method. */
 EVP_CIPHER* we_aes128_cbc_hmac_ciph = NULL;
@@ -552,6 +605,11 @@ static int we_init_aescbc_hmac_meth(EVP_CIPHER *cipher)
     if (ret == 1) {
         ret = EVP_CIPHER_meth_set_init(cipher, we_aes_cbc_hmac_init);
     }
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+    if (ret == 1) {
+        ret = EVP_CIPHER_meth_set_cleanup(cipher, we_aes_cbc_hmac_cleanup);
+    }
+#endif
     if (ret == 1) {
         ret = EVP_CIPHER_meth_set_do_cipher(cipher, we_aes_cbc_hmac_cipher);
     }
