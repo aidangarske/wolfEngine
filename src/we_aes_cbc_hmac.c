@@ -68,18 +68,11 @@ static int we_aes_cbc_hmac_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
     WOLFENGINE_MSG_VERBOSE(WE_LOG_CIPHER, "ARGS [ctx = %p, key = %p, iv = %p, "
                            "enc = %d]", ctx, key, iv, enc);
 
-    if ((iv == NULL) && (key == NULL)) {
-        WOLFENGINE_ERROR_MSG(WE_LOG_CIPHER, "iv == NULL && key == NULL");
+    aes = (we_AesCbcHmac *)EVP_CIPHER_CTX_get_cipher_data(ctx);
+    if (aes == NULL) {
+        WOLFENGINE_ERROR_FUNC_NULL(WE_LOG_CIPHER,
+                                   "EVP_CIPHER_CTX_get_cipher_data", aes);
         ret = 0;
-    }
-
-    if (ret == 1) {
-        aes = (we_AesCbcHmac *)EVP_CIPHER_CTX_get_cipher_data(ctx);
-        if (aes == NULL) {
-            WOLFENGINE_ERROR_FUNC_NULL(WE_LOG_CIPHER,
-                                       "EVP_CIPHER_CTX_get_cipher_data", aes);
-            ret = 0;
-        }
     }
 
     /* Initialize the wolfSSL AES object. */
@@ -122,7 +115,7 @@ static int we_aes_cbc_hmac_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
                 ret = 0;
             }
         }
-        else {
+        else if (iv != NULL) {
             /* Set the IV into wolfSSL AES object. */
             WOLFENGINE_MSG(WE_LOG_CIPHER, "Setting AES IV");
             rc = wc_AesSetIV(&aes->aes, iv);
