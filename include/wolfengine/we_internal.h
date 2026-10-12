@@ -358,5 +358,6 @@ WOLFENGINE_LOCAL int we_init_pbe_keygen(void);
 #endif
 
 WOLFENGINE_LOCAL int wolfengine_bind(ENGINE *e, const char *id);
+WOLFENGINE_LOCAL ENGINE *wolfengine_get_bound_engine(void);
 
 #endif /* INTERNAL_H */

@@ -20,15 +20,12 @@
  */
 
 #include <wolfengine/we_internal.h>
+#include <wolfengine/we_wolfengine.h>
 
 
 /* Note on CMAC implementation.
- * Alias used as EVP_PKEY created with OpenSSL and wolfEngine both have the
- * wolfEngine method. Need to distinguish between the two as different data
- * types are stored:
- *    OpenSSL    - CMAC_CTX
- *    wolfEngine - ASN1_OCTET_STRING
- * CMAC_CTX doesn't allow getting key data so can't be used by wolfEngine.
+ * Engine-created PKEYs retain CMAC_CTX owned by OpenSSL's global ASN.1 method.
+ * A wolfEngine cipher handles AES without globally registering that method.
  */
 
 #if defined(WE_HAVE_HMAC) || defined(WE_HAVE_CMAC)
@@ -63,6 +60,11 @@ typedef struct we_Mac
     int size;
     /** Type of digest to use. */
     int type;
+#ifdef WE_HAVE_CMAC
+    /** OpenSSL CMAC state and selected cipher. */
+    CMAC_CTX *cmacCtx;
+    int cipherNid;
+#endif
 } we_Mac;
 
 /**
@@ -332,25 +334,42 @@ static int we_mac_hmac_init(EVP_PKEY_CTX *ctx, we_Mac *mac)
  */
 static int we_mac_cmac_init(EVP_PKEY_CTX *ctx, we_Mac *mac)
 {
-    int ret;
-    int rc;
+    int ret = 1;
+    EVP_PKEY *pkey;
+    CMAC_CTX *cmac = NULL;
+    CMAC_CTX *copy = NULL;
 
     WOLFENGINE_ENTER(WE_LOG_MAC, "we_mac_cmac_init");
     WOLFENGINE_MSG_VERBOSE(WE_LOG_MAC, "ARGS [ctx = %p, mac = %p]", ctx, mac);
 
-    /* Get key into cache. */
-    ret = we_mac_cache_key(ctx, mac);
+    if ((ctx == NULL) || (mac == NULL)) {
+        ret = 0;
+    }
     if (ret == 1) {
-        WOLFENGINE_MSG(WE_LOG_MAC, "Initializing wolfCrypt Cmac structure: %p",
-            &mac->state.cmac);
-        /* Initialize wolfSSL CMAC object with key. */
-        rc = wc_InitCmac(&mac->state.cmac, (const byte*)mac->key, mac->keySz,
-            WC_CMAC_AES, NULL);
-        if (rc != 0) {
-            WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "wc_InitCmac", rc);
+        pkey = EVP_PKEY_CTX_get0_pkey(ctx);
+        if (pkey == NULL) {
             ret = 0;
         }
     }
+    if (ret == 1) {
+        cmac = (CMAC_CTX *)EVP_PKEY_get0(pkey);
+        if (cmac == NULL)
+            ret = 0;
+    }
+    if (ret == 1) {
+        copy = CMAC_CTX_new();
+        if (copy == NULL)
+            ret = 0;
+    }
+    if ((ret == 1) && (CMAC_CTX_copy(copy, cmac) != 1))
+        ret = 0;
+    if (ret == 1) {
+        CMAC_CTX_free(mac->cmacCtx);
+        mac->cmacCtx = copy;
+        copy = NULL;
+    }
+
+    CMAC_CTX_free(copy);
 
     WOLFENGINE_LEAVE(WE_LOG_MAC, "we_mac_cmac_init", ret);
 
@@ -387,7 +406,7 @@ static int we_mac_md_to_hash_type(EVP_MD *md)
  * Supported operations include:
  *  - EVP_PKEY_CTRL_MD: set digest to use or initialize CMAC operation.
  *  - EVP_PKEY_CTRL_SET_MAC_KEY: set password/key to use.
- *  - EVP_PKEY_CTRL_CIPHER: set cipher to use (ignored).
+ *  - EVP_PKEY_CTRL_CIPHER: set cipher to use with CMAC.
  *  - EVP_PKEY_CTRL_DIGESTINIT: initialize HMAC's digest.
  *
  * @param  ctx   [in]  EVP_PKEY context being used.
@@ -485,7 +504,19 @@ static int we_mac_pkey_ctrl(EVP_PKEY_CTX *ctx, int type, int num, void *ptr)
             case EVP_PKEY_CTRL_CIPHER:
                 /* ptr  [in]  EVP_CIPHER object. */
                 WOLFENGINE_MSG(WE_LOG_MAC, "type: EVP_PKEY_CTRL_CIPHER");
-                /* Do nothing, we use internal AES */
+            #ifdef WE_HAVE_CMAC
+                if (mac->algo == WE_CMAC_ALGO) {
+                    if (ptr == NULL) {
+                        ret = 0;
+                    }
+                    else {
+                        mac->cipherNid = EVP_CIPHER_nid(
+                                (const EVP_CIPHER *)ptr);
+                        if (mac->cipherNid == NID_undef)
+                            ret = 0;
+                    }
+                }
+            #endif
                 break;
 
             /* Initialize the digest operation. */
@@ -585,8 +616,11 @@ static int we_mac_dup(we_Mac *src, we_Mac **dst)
         mac->size  = src->size;
         mac->type  = src->type;
         mac->keySz = src->keySz;
+    #ifdef WE_HAVE_CMAC
+        mac->cipherNid = src->cipherNid;
+    #endif
         /* Duplicate the key if set. */
-        if (src->keySz >= 0) {
+        if (src->key != NULL) {
             ret = we_mac_set_key(mac, src->key, src->keySz);
         }
         else {
@@ -651,7 +685,8 @@ static void we_mac_pkey_cleanup(EVP_PKEY_CTX *ctx)
         #ifdef WE_HAVE_CMAC
             case WE_CMAC_ALGO:
                 WOLFENGINE_MSG(WE_LOG_MAC, "MAC algo: WE_CMAC_ALGO");
-                /* No free for wolfCrypt CMAC. */
+                CMAC_CTX_free(mac->cmacCtx);
+                (void)wc_CmacFree(&mac->state.cmac);
                 break;
         #endif
             default:
@@ -1472,10 +1507,6 @@ int we_init_hmac_pkey_asn1_meth(void)
         EVP_PKEY_asn1_set_get_priv_key(we_hmac_pkey_asn1_method,
                 we_hmac_pkey_asn1_get_priv_key);
     #endif
-        /* Add our created asn1 method to the internal list of available
-         * methods. */
-        /* Known, still-reachable memory leak from openssl internals on 1.0.2 */
-        EVP_PKEY_asn1_add0(we_hmac_pkey_asn1_method);
     }
     /* No failure after allocation - no need to free on error. */
 
@@ -1510,7 +1541,10 @@ EVP_PKEY_ASN1_METHOD *we_cmac_we_pkey_asn1_method = NULL;
 static int we_cmac_pkey_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
 {
     int ret = 1;
-    ASN1_OCTET_STRING *key;
+    we_Mac *mac = NULL;
+    CMAC_CTX *cmac = NULL;
+    const EVP_CIPHER *cipher = NULL;
+    ENGINE *engine = NULL;
 
     WOLFENGINE_ENTER(WE_LOG_MAC, "we_cmac_pkey_keygen");
     WOLFENGINE_MSG_VERBOSE(WE_LOG_MAC, "ARGS [ctx = %p, pkey = %p]", ctx, pkey);
@@ -1525,17 +1559,61 @@ static int we_cmac_pkey_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
     }
 
     if (ret == 1) {
-        /* Make an ASN.1 octet string from key data. */
-        ret = we_mac_get_asn1_key(ctx, &key);
-    }
-    if (ret == 1) {
-        /* Assign algorithm and key to PKEY. */
-        if (EVP_PKEY_assign(pkey, EVP_PKEY_CMAC, key) != 1) {
-            WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "EVP_PKEY_assign", 0);
-            ASN1_STRING_clear_free((ASN1_STRING*)key);
+        mac = (we_Mac *)EVP_PKEY_CTX_get_data(ctx);
+        if ((mac == NULL) || (mac->key == NULL)) {
             ret = 0;
         }
     }
+    if (ret == 1) {
+        if (mac->cipherNid != NID_undef) {
+            cipher = EVP_get_cipherbynid(mac->cipherNid);
+            if (cipher == NULL)
+                ret = 0;
+        }
+        else {
+            switch (mac->keySz) {
+                case 16:
+                    cipher = EVP_aes_128_cbc();
+                    break;
+                case 24:
+                    cipher = EVP_aes_192_cbc();
+                    break;
+                case 32:
+                    cipher = EVP_aes_256_cbc();
+                    break;
+                default:
+                    ret = 0;
+            }
+        }
+    }
+    if (ret == 1) {
+        cmac = CMAC_CTX_new();
+        if (cmac == NULL) {
+            ret = 0;
+        }
+    }
+    #ifdef WE_HAVE_AESCBC
+    if (ret == 1) {
+    #if OPENSSL_VERSION_NUMBER >= 0x10100000L
+        engine = wolfengine_get_bound_engine();
+    #else
+        engine = ENGINE_by_id(wolfengine_id);
+    #endif
+        if (engine == NULL)
+            ret = 0;
+    }
+    #endif
+    if ((ret == 1) && (CMAC_Init(cmac, mac->key, (size_t)mac->keySz,
+            cipher, engine) != 1)) {
+        ret = 0;
+    }
+    if ((ret == 1) &&
+            (EVP_PKEY_assign(pkey, EVP_PKEY_CMAC, cmac) != 1)) {
+        WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "EVP_PKEY_assign", 0);
+        ret = 0;
+    }
+    if (ret == 1)
+        cmac = NULL;
     if (ret == 1) {
     #if OPENSSL_VERSION_NUMBER >= 0x10101000L
         /* Set alias to distinguish between OpenSSL and wolfEngine created. */
@@ -1545,57 +1623,38 @@ static int we_cmac_pkey_keygen(EVP_PKEY_CTX *ctx, EVP_PKEY *pkey)
     #endif
     }
 
+    CMAC_CTX_free(cmac);
+    if (engine != NULL) {
+    #if OPENSSL_VERSION_NUMBER >= 0x10100000L
+        ENGINE_finish(engine);
+    #else
+        ENGINE_free(engine);
+    #endif
+    }
+
     WOLFENGINE_LEAVE(WE_LOG_MAC, "we_cmac_pkey_keygen", ret);
     return ret;
 }
 
 /**
- * Free PKEY data that is either of type ASN1_OCTET_STRING or CMAC_CTX.
+ * Free the CMAC context held by a PKEY.
  *
  * @param  pkey  [in]  EVP PKEY being freed.
  */
 static void we_cmac_pkey_free(EVP_PKEY *pkey)
 {
     int ret = 1;
+    CMAC_CTX *cmac;
 
     WOLFENGINE_ENTER(WE_LOG_MAC, "we_cmac_pkey_free");
     WOLFENGINE_MSG_VERBOSE(WE_LOG_MAC, "ARGS [pkey = %p]", pkey);
 
-    /* Can be either local alias or CMAC with OpenSSL data. */
-#if OPENSSL_VERSION_NUMBER >= 0x1000212fL
-    if (EVP_PKEY_id(pkey) == NID_wolfengine_cmac)
-#else
-    if (pkey->type == NID_wolfengine_cmac)
-#endif
-    {
-        ASN1_OCTET_STRING *key;
-
-        WOLFENGINE_MSG(WE_LOG_MAC, "EVP_PKEY_id: NID_wolfengine_cmac");
-
-        /* Get the key as an ASN.1 octet string. */
-        key = (ASN1_OCTET_STRING*)EVP_PKEY_get0(pkey);
-        if (key != NULL) {
-            /* Dispose of object. */
-            ASN1_STRING_clear_free((ASN1_STRING*)key);
-        }
-        else {
-            ret = 0;
-        }
+    cmac = (CMAC_CTX *)EVP_PKEY_get0(pkey);
+    if (cmac != NULL) {
+        CMAC_CTX_free(cmac);
     }
     else {
-        CMAC_CTX *cmac;
-
-        WOLFENGINE_MSG(WE_LOG_MAC, "EVP_PKEY_id: EVP_PKEY_CMAC");
-
-        /* Get the key as CMAC_CTX. */
-        cmac = (CMAC_CTX*)EVP_PKEY_get0(pkey);
-        if (cmac != NULL) {
-            /* Dispose of object. */
-            CMAC_CTX_free(cmac);
-        }
-        else {
-            ret = 0;
-        }
+        ret = 0;
     }
 
     WOLFENGINE_LEAVE(WE_LOG_MAC, "we_cmac_pkey_free", ret);
@@ -1659,7 +1718,7 @@ static int we_cmac_pkey_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
 {
     int ret = 1;
     we_Mac *mac;
-    we_Mac *dupl;
+    we_Mac *dupl = NULL;
 
     WOLFENGINE_ENTER(WE_LOG_MAC, "we_cmac_pkey_copy");
     WOLFENGINE_MSG_VERBOSE(WE_LOG_MAC, "ARGS [dst = %p, src = %p]", dst, src);
@@ -1686,12 +1745,29 @@ static int we_cmac_pkey_copy(EVP_PKEY_CTX *dst, EVP_PKEY_CTX *src)
         ret = we_mac_dup(mac, &dupl);
     }
     if (ret == 1) {
-        /* Copy wolfSSL CMAC object. */
-        ret = we_cmac_copy(mac, &dupl->state.cmac, &mac->state.cmac);
+        if (mac->cmacCtx != NULL) {
+            dupl->cmacCtx = CMAC_CTX_new();
+            if (dupl->cmacCtx == NULL) {
+                ret = 0;
+            }
+            else if (CMAC_CTX_copy(dupl->cmacCtx, mac->cmacCtx) != 1) {
+                ret = 0;
+            }
+        }
+        else {
+            /* Copy wolfSSL CMAC object. */
+            ret = we_cmac_copy(mac, &dupl->state.cmac, &mac->state.cmac);
+        }
     }
     if (ret == 1) {
         /* Set the internal MAC object against context. */
         EVP_PKEY_CTX_set_data(dst, dupl);
+    }
+    if ((ret == 0) && (dupl != NULL)) {
+        CMAC_CTX_free(dupl->cmacCtx);
+        (void)wc_CmacFree(&dupl->state.cmac);
+        OPENSSL_clear_free(dupl->key, dupl->keySz);
+        OPENSSL_free(dupl);
     }
 
     WOLFENGINE_LEAVE(WE_LOG_MAC, "we_cmac_pkey_copy", ret);
@@ -1750,10 +1826,9 @@ static int we_cmac_pkey_update(EVP_MD_CTX *ctx, const void *data, size_t dataSz)
     }
 
     if ((ret == 1) && (dataSz != 0)) {
-        /* Update the wolfCrypt CMAC object with more data. */
-        rc = wc_CmacUpdate(&mac->state.cmac, (const byte*)data, (word32)dataSz);
-        if (rc != 0) {
-            WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "wc_CmacUpdate", rc);
+        rc = CMAC_Update(mac->cmacCtx, data, dataSz);
+        if (rc != 1) {
+            WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "CMAC_Update", rc);
             ret = 0;
         }
     }
@@ -1832,12 +1907,12 @@ static int we_cmac_pkey_signctx(EVP_PKEY_CTX *ctx, unsigned char *sig,
         *sigLen = WC_CMAC_TAG_MAX_SZ;
     }
     if ((ret == 1) && (sig != NULL)) {
-        word32 len = WC_CMAC_TAG_MAX_SZ;
+        size_t len = WC_CMAC_TAG_MAX_SZ;
 
         /* Calculate MAC output. */
-        rc = wc_CmacFinal(&mac->state.cmac, (byte*)sig, &len);
-        if (rc != 0) {
-            WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "wc_CmacFinal", rc);
+        rc = CMAC_Final(mac->cmacCtx, sig, &len);
+        if (rc != 1) {
+            WOLFENGINE_ERROR_FUNC(WE_LOG_MAC, "CMAC_Final", rc);
             ret = 0;
         }
         else {
@@ -2018,14 +2093,13 @@ int we_init_cmac_pkey_asn1_meth(void)
         /* Set alternative with same CMAC methods. */
         EVP_PKEY_asn1_copy(we_cmac_we_pkey_asn1_method,
                            we_cmac_pkey_asn1_method);
-        /* Add our created asn1 method to the internal list of available
-         * methods. */
-        /* Known, still-reachable memory leak from openssl internals on 1.0.2 */
-        EVP_PKEY_asn1_add0(we_cmac_pkey_asn1_method);
+        /* CMAC key generation uses this callback-free alias to select the
+         * alternative PKEY method without retaining either engine-owned
+         * ASN.1 method. */
         EVP_PKEY_asn1_add_alias(EVP_PKEY_CMAC, NID_wolfengine_cmac);
     }
 
-    /* No failure after registration - no need to free on error. */
+    /* No failure after setup - no need to free on error. */
     if ((ret == 0) && (we_cmac_pkey_asn1_method != NULL)) {
         /* Free the CMAC method object and reset pointer to NULL. */
         EVP_PKEY_asn1_free(we_cmac_pkey_asn1_method);

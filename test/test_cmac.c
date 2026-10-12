@@ -345,6 +345,81 @@ int test_cmac_copy_error(ENGINE *e, void *data)
     return ret;
 }
 
+int test_cmac_copy(ENGINE *e, void *data)
+{
+    int ret = 0;
+    unsigned char key[16] = { 0 };
+    unsigned char prefix[] = "shared prefix";
+    unsigned char suffix[] = "original";
+    unsigned char msg[] = "shared prefixoriginal";
+    unsigned char prefixMac[WC_CMAC_TAG_MAX_SZ];
+    unsigned char fullMac[WC_CMAC_TAG_MAX_SZ];
+    unsigned char expPrefix[WC_CMAC_TAG_MAX_SZ];
+    unsigned char expFull[WC_CMAC_TAG_MAX_SZ];
+    size_t prefixMacSz = sizeof(prefixMac);
+    size_t fullMacSz = sizeof(fullMac);
+    int expPrefixSz = sizeof(expPrefix);
+    int expFullSz = sizeof(expFull);
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+    EVP_MD_CTX *ctx = NULL;
+
+    (void)data;
+    pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_CMAC, e);
+    if (pctx == NULL)
+        ret = -1;
+    if (ret == 0)
+        ret = EVP_PKEY_keygen_init(pctx) != 1;
+    if (ret == 0) {
+        ret = EVP_PKEY_CTX_ctrl(pctx, -1, EVP_PKEY_OP_KEYGEN,
+                EVP_PKEY_CTRL_CIPHER, 0, (void*)EVP_aes_128_cbc()) != 1;
+    }
+    if (ret == 0) {
+        ret = EVP_PKEY_CTX_ctrl(pctx, -1, EVP_PKEY_OP_KEYGEN,
+                EVP_PKEY_CTRL_SET_MAC_KEY, sizeof(key), key) != 1;
+    }
+    if (ret == 0)
+        ret = EVP_PKEY_keygen(pctx, &pkey) != 1;
+    if (ret == 0) {
+        ctx = EVP_MD_CTX_new();
+        if (ctx == NULL)
+            ret = -1;
+    }
+    if (ret == 0)
+        ret = EVP_DigestSignInit(ctx, NULL, NULL, e, pkey) != 1;
+    if (ret == 0) {
+        ret = EVP_DigestSignUpdate(ctx, prefix, sizeof(prefix) - 1) != 1;
+    }
+    if (ret == 0)
+        ret = EVP_DigestSignFinal(ctx, prefixMac, &prefixMacSz) != 1;
+    if (ret == 0)
+        ret = EVP_DigestSignUpdate(ctx, suffix, sizeof(suffix) - 1) != 1;
+    if (ret == 0)
+        ret = EVP_DigestSignFinal(ctx, fullMac, &fullMacSz) != 1;
+    if (ret == 0) {
+        ret = test_cmac_generation(NULL, EVP_aes_128_cbc(), key, sizeof(key),
+                prefix, sizeof(prefix) - 1, expPrefix, &expPrefixSz);
+    }
+    if (ret == 0) {
+        ret = test_cmac_generation(NULL, EVP_aes_128_cbc(), key, sizeof(key),
+                msg, sizeof(msg) - 1, expFull, &expFullSz);
+    }
+    if ((ret == 0) && ((prefixMacSz != (size_t)expPrefixSz) ||
+            (XMEMCMP(prefixMac, expPrefix, prefixMacSz) != 0))) {
+        ret = -1;
+    }
+    if ((ret == 0) && ((fullMacSz != (size_t)expFullSz) ||
+            (XMEMCMP(fullMac, expFull, fullMacSz) != 0))) {
+        ret = -1;
+    }
+
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+
+    return ret;
+}
+
 int test_cmac_keygen_reuse(ENGINE *e, void *data)
 {
     int ret = 0;
@@ -379,6 +454,30 @@ int test_cmac_keygen_reuse(ENGINE *e, void *data)
     return ret;
 }
 
+int test_cmac_unregistered_engine(ENGINE *e, void *data)
+{
+    int ret = 0;
+    int removed = 0;
+    unsigned char key[16] = { 0 };
+    unsigned char msg[] = "Test message";
+    unsigned char mac[WC_CMAC_TAG_MAX_SZ];
+    int macSz = sizeof(mac);
+
+    (void)data;
+    if (ENGINE_remove(e) != 1)
+        ret = -1;
+    else
+        removed = 1;
+    if (ret == 0) {
+        ret = test_cmac_generation(e, EVP_aes_128_cbc(), key, sizeof(key),
+                msg, sizeof(msg), mac, &macSz);
+    }
+    if ((removed == 1) && (ENGINE_add(e) != 1))
+        ret = -1;
+
+    return ret;
+}
+
 int test_cmac_asn1_registry(ENGINE *e, void *data)
 {
     int ret = 0;
@@ -406,5 +505,42 @@ int test_cmac_asn1_registry(ENGINE *e, void *data)
 }
 
 #endif /* WE_HAVE_CMAC */
+
+#if defined(WE_HAVE_HMAC) || defined(WE_HAVE_CMAC)
+int test_mac_asn1_ownership(ENGINE *e, void *data)
+{
+    int ret = 0;
+    int i;
+    int count;
+    const int *nids = NULL;
+    const EVP_PKEY_ASN1_METHOD *globalMethod;
+    EVP_PKEY_ASN1_METHOD *engineMethod = NULL;
+    ENGINE_PKEY_ASN1_METHS_PTR methods;
+
+    (void)data;
+    methods = ENGINE_get_pkey_asn1_meths(e);
+    if (methods == NULL)
+        ret = -1;
+    if (ret == 0) {
+        count = methods(e, NULL, &nids, 0);
+        if ((count <= 0) || (nids == NULL))
+            ret = -1;
+    }
+    for (i = 0; (ret == 0) && (i < count); i++) {
+        if ((methods(e, &engineMethod, NULL, nids[i]) != 1) ||
+                (engineMethod == NULL)) {
+            ret = -1;
+        }
+        if (ret == 0) {
+            globalMethod = EVP_PKEY_asn1_find(NULL, nids[i]);
+            if (globalMethod == engineMethod)
+                ret = -1;
+        }
+    }
+
+    return ret;
+}
+
+#endif /* WE_HAVE_HMAC || WE_HAVE_CMAC */
 
 
