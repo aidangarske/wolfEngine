@@ -1564,6 +1564,8 @@ static void we_cmac_pkey_free(EVP_PKEY *pkey)
     /* Can be either local alias or CMAC with OpenSSL data. */
 #if OPENSSL_VERSION_NUMBER >= 0x1000212fL
     if (EVP_PKEY_id(pkey) == NID_wolfengine_cmac)
+#else
+    if (pkey->type == NID_wolfengine_cmac)
 #endif
     {
         ASN1_OCTET_STRING *key;
@@ -1580,7 +1582,6 @@ static void we_cmac_pkey_free(EVP_PKEY *pkey)
             ret = 0;
         }
     }
-#if OPENSSL_VERSION_NUMBER >= 0x1000212fL
     else {
         CMAC_CTX *cmac;
 
@@ -1596,7 +1597,6 @@ static void we_cmac_pkey_free(EVP_PKEY *pkey)
             ret = 0;
         }
     }
-#endif
 
     WOLFENGINE_LEAVE(WE_LOG_MAC, "we_cmac_pkey_free", ret);
 
