@@ -106,6 +106,7 @@ static int we_aes_cbc_hmac_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
         /* No payload yet. */
         aes->pLen = 0;
         aes->tls = 0;
+        aes->tls11 = 0;
 
         if (key != NULL) {
             /* Set the key into wolfSSL AES object. */
@@ -254,7 +255,7 @@ static int we_aes_cbc_hmac_dec(we_AesCbcHmac* aes, unsigned char *out,
     /* Get payload length. */
     pLen = aes->pLen;
     tls = (pLen != 0);
-    if (aes->tls11) {
+    if (tls && aes->tls11) {
         /* TLS v1.1 and v1.2 have IV before message. */
         WOLFENGINE_MSG(WE_LOG_CIPHER, "Setting AES IV, aes->tls11 = %d",
                        aes->tls11);
