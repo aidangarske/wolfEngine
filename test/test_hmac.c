@@ -270,6 +270,42 @@ int test_hmac_pkey_size(ENGINE *e, void *data)
     return ret;
 }
 
+int test_hmac_update_size(ENGINE *e, void *data)
+{
+    int ret = 0;
+    unsigned char key[] = "My empire of dirt";
+    unsigned char msg = 0;
+    EVP_MD_CTX *ctx = NULL;
+    EVP_PKEY *pkey = NULL;
+
+    (void)data;
+    ctx = EVP_MD_CTX_new();
+    if (ctx == NULL)
+        ret = -1;
+    if (ret == 0) {
+        pkey = EVP_PKEY_new_mac_key(EVP_PKEY_HMAC, e, key, sizeof(key));
+        if (pkey == NULL)
+            ret = -1;
+    }
+    if (ret == 0) {
+        ret = EVP_DigestSignInit(ctx, NULL, EVP_sha256(), e, pkey) != 1;
+    }
+    if (ret == 0) {
+        if (sizeof(size_t) > sizeof(word32)) {
+            size_t updateLen = UINT32_MAX;
+
+            updateLen++;
+            if (EVP_DigestSignUpdate(ctx, &msg, updateLen) == 1)
+                ret = -1;
+        }
+    }
+
+    EVP_PKEY_free(pkey);
+    EVP_MD_CTX_free(ctx);
+
+    return ret;
+}
+
 #if OPENSSL_VERSION_NUMBER >= 0x10101000L
 int test_hmac_raw_key_output_size(ENGINE *e, void *data)
 {

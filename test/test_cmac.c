@@ -233,6 +233,55 @@ int test_cmac_output_size(ENGINE *e, void *data)
     return ret;
 }
 
+int test_cmac_update_size(ENGINE *e, void *data)
+{
+    int ret = 0;
+    unsigned char key[16] = { 0 };
+    unsigned char msg = 0;
+    EVP_MD_CTX *ctx = NULL;
+    EVP_PKEY_CTX *pctx = NULL;
+    EVP_PKEY *pkey = NULL;
+
+    (void)data;
+    ctx = EVP_MD_CTX_new();
+    if (ctx == NULL)
+        ret = -1;
+    if (ret == 0) {
+        pctx = EVP_PKEY_CTX_new_id(EVP_PKEY_CMAC, e);
+        if (pctx == NULL)
+            ret = -1;
+    }
+    if (ret == 0)
+        ret = EVP_PKEY_keygen_init(pctx) != 1;
+    if (ret == 0) {
+        ret = EVP_PKEY_CTX_ctrl(pctx, -1, EVP_PKEY_OP_KEYGEN,
+                EVP_PKEY_CTRL_CIPHER, 0, (void*)EVP_aes_128_cbc()) != 1;
+    }
+    if (ret == 0) {
+        ret = EVP_PKEY_CTX_ctrl(pctx, -1, EVP_PKEY_OP_KEYGEN,
+                EVP_PKEY_CTRL_SET_MAC_KEY, sizeof(key), key) != 1;
+    }
+    if (ret == 0)
+        ret = EVP_PKEY_keygen(pctx, &pkey) != 1;
+    if (ret == 0)
+        ret = EVP_DigestSignInit(ctx, NULL, NULL, e, pkey) != 1;
+    if (ret == 0) {
+        if (sizeof(size_t) > sizeof(word32)) {
+            size_t updateLen = UINT32_MAX;
+
+            updateLen++;
+            if (EVP_DigestSignUpdate(ctx, &msg, updateLen) == 1)
+                ret = -1;
+        }
+    }
+
+    EVP_PKEY_free(pkey);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_MD_CTX_free(ctx);
+
+    return ret;
+}
+
 #endif /* WE_HAVE_CMAC */
 
 
