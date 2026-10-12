@@ -40,6 +40,8 @@ typedef struct we_AesCbcHmac
     unsigned int   init:1;
     /** Flag to indicate whether we are doing encrypt (1) or decrpyt (0). */
     unsigned int   enc:1;
+    /** Flag to indicate whether TLS AAD has been configured. */
+    unsigned int   tls:1;
     /** Flag to indicate whether we are doing TLS 1.1 or above. */
     unsigned int   tls11:1;
 } we_AesCbcHmac;
@@ -103,6 +105,7 @@ static int we_aes_cbc_hmac_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
         aes->enc = enc;
         /* No payload yet. */
         aes->pLen = 0;
+        aes->tls = 0;
 
         if (key != NULL) {
             /* Set the key into wolfSSL AES object. */
@@ -155,7 +158,7 @@ static int we_aes_cbc_hmac_enc(we_AesCbcHmac* aes, unsigned char *out,
 
     /* Get payload length to get TLS. */
     pLen = aes->pLen;
-    tls = (pLen != 0);
+    tls = aes->tls;
     if (!tls) {
         WOLFENGINE_MSG(WE_LOG_CIPHER, "Not being called from TLS");
         pLen = (int)len;
@@ -449,6 +452,7 @@ static int we_aes_cbc_hmac_ctrl(EVP_CIPHER_CTX *ctx, int type, int arg,
                     ret = 0;
                 }
                 if (ret == 1) {
+                    aes->tls = 1;
                     /* Get the verion from the record layer. */
                     tlsVer = (tls[arg - 4] << 8) | tls[arg - 3];
                     /* Record whether it is TLS v1.1 or above. */
