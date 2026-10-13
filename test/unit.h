@@ -131,6 +131,7 @@ int test_des3_cbc(ENGINE *e, void *data);
 int test_des3_cbc_stream(ENGINE *e, void *data);
 int test_des3_cbc_iv_bounds(ENGINE *e, void *data);
 int test_des3_cbc_decrypt_error_log(ENGINE *e, void *data);
+int test_des3_cbc_rekey_cleanup(ENGINE *e, void *data);
 #endif
 
 #ifdef WE_HAVE_AESECB
