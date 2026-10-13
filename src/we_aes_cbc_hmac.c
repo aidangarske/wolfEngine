@@ -329,7 +329,7 @@ static int we_aes_cbc_hmac_dec(we_AesCbcHmac* aes, unsigned char *out,
         }
     }
     /* TODO: not constant time. */
-    if (ret != -1) {
+    if ((ret != -1) && tls) {
         /* MAC the message/input. */
         WOLFENGINE_MSG(WE_LOG_CIPHER, "Generate MAC over message/input, "
                        "len = %d", ret);
@@ -339,7 +339,7 @@ static int we_aes_cbc_hmac_dec(we_AesCbcHmac* aes, unsigned char *out,
             ret = -1;
         }
     }
-    if (ret != -1) {
+    if ((ret != -1) && tls) {
         /* Calculate MAC. */
         rc = wc_HmacFinal(&aes->hmac, mac);
         if (rc != 0) {
@@ -347,7 +347,7 @@ static int we_aes_cbc_hmac_dec(we_AesCbcHmac* aes, unsigned char *out,
             ret = -1;
         }
     }
-    if (ret != -1) {
+    if ((ret != -1) && tls) {
         WOLFENGINE_MSG_VERBOSE(WE_LOG_CIPHER, "Generated MAC:");
         WOLFENGINE_BUFFER(WE_LOG_CIPHER, mac, SHA256_DIGEST_LENGTH);
 
