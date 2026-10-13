@@ -358,6 +358,7 @@ static int we_aes_cbc_hmac_dec(we_AesCbcHmac* aes, unsigned char *out,
         }
     }
 
+    OPENSSL_cleanse(mac, sizeof(mac));
     WOLFENGINE_LEAVE(WE_LOG_CIPHER, "we_aes_cbc_hmac_dec", ret);
 
     return ret;
