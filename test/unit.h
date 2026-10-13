@@ -89,6 +89,10 @@ typedef struct TEST_CASE {
 
 int test_logging(ENGINE *e, void *data);
 
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+int test_openssl_bc_method_name(ENGINE *e, void *data);
+#endif
+
 #define WE_VALGRIND_TEST 0x1
 
 #ifdef WE_HAVE_DIGEST
